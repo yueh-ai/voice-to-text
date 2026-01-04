@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Transcription Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .streaming { background-color: #d1ecf1; color: #0c5460; }
+        #transcript {
+            border: 1px solid #ddd;
+            padding: 15px;
+            min-height: 200px;
+            background-color: #f9f9f9;
+            margin: 20px 0;
+        }
+        #logs {
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            background-color: #f5f5f5;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Transcription Test Client</h1>
+
+    <div id="status" class="disconnected">Disconnected</div>
+
+    <div class="controls">
+        <button id="connectBtn" onclick="connect()">Connect</button>
+        <button id="startBtn" onclick="startStreaming()" disabled>Start Streaming</button>
+        <button id="stopBtn" onclick="stopStreaming()" disabled>Stop Streaming</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+        <button onclick="sendTestAudio()">Send Test Audio</button>
+    </div>
+
+    <h3>Transcript:</h3>
+    <div id="transcript"></div>
+
+    <h3>Logs:</h3>
+    <div id="logs"></div>
+
+    <script>
+        let ws = null;
+        let sessionId = null;
+
+        function log(message) {
+            const logs = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        function updateStatus(text, className) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = className;
+        }
+
+        function connect() {
+            if (ws) {
+                log('Already connected');
+                return;
+            }
+
+            const wsUrl = 'ws://localhost:8000/ws/transcribe';
+            log(`Connecting to ${wsUrl}...`);
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                log('WebSocket connected');
+                updateStatus('Connected', 'connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                log(`Received: ${JSON.stringify(message)}`);
+
+                if (message.type === 'session_started') {
+                    sessionId = message.session_id;
+                    log(`Session started: ${sessionId}`);
+                }
+                else if (message.type === 'streaming_started') {
+                    updateStatus('Streaming', 'streaming');
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('stopBtn').disabled = false;
+                }
+                else if (message.type === 'streaming_stopped') {
+                    updateStatus('Connected', 'connected');
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').disabled = true;
+                }
+                else if (message.type === 'partial_transcript') {
+                    const transcript = document.getElementById('transcript');
+                    transcript.innerHTML += `<span style="color: #666;">${message.text}</span><br>`;
+                }
+                else if (message.type === 'final_transcript') {
+                    const transcript = document.getElementById('transcript');
+                    transcript.innerHTML += `<strong>${message.text}</strong><br>`;
+                }
+                else if (message.type === 'error') {
+                    log(`ERROR: ${message.message}`);
+                }
+            };
+
+            ws.onerror = (error) => {
+                log(`WebSocket error: ${error}`);
+            };
+
+            ws.onclose = () => {
+                log('WebSocket closed');
+                updateStatus('Disconnected', 'disconnected');
+                ws = null;
+                sessionId = null;
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = true;
+            };
+        }
+
+        function startStreaming() {
+            if (!ws) {
+                log('Not connected');
+                return;
+            }
+            log('Sending start command...');
+            ws.send(JSON.stringify({ type: 'start' }));
+        }
+
+        function stopStreaming() {
+            if (!ws) {
+                log('Not connected');
+                return;
+            }
+            log('Sending stop command...');
+            ws.send(JSON.stringify({ type: 'stop' }));
+        }
+
+        function disconnect() {
+            if (ws) {
+                log('Disconnecting...');
+                ws.close();
+            }
+        }
+
+        function sendTestAudio() {
+            if (!ws) {
+                log('Not connected');
+                return;
+            }
+            const dummyAudio = new Uint8Array(1024);
+            for (let i = 0; i < dummyAudio.length; i++) {
+                dummyAudio[i] = Math.floor(Math.random() * 256);
+            }
+            log(`Sending ${dummyAudio.length} bytes of test audio`);
+            ws.send(dummyAudio.buffer);
+        }
+    </script>
+</body>
+</html>
