@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(nvidia-smi:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(source venv/bin/activate)",
+      "Bash(uv lock:*)",
+      "Bash(uv sync)",
+      "Bash(uv run pytest:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

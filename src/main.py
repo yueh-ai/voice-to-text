@@ -6,6 +6,8 @@ import json
 from typing import Dict, Any
 
 from src.session import SessionManager, SessionState
+from src.config import Config
+from src.asr_engine import ASREngine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,22 +16,99 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Real-Time Transcription Service")
-session_manager = SessionManager()
+
+# Global state for ASR engine and config
+config = None
+asr_engine_instance = None
+session_manager = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize ASR engine on startup"""
+    global config, asr_engine_instance, session_manager
+
+    try:
+        logger.info("Starting ASR service initialization...")
+
+        # Load configuration
+        config = Config.load()
+        logger.info("Configuration loaded")
+
+        # Get ASR engine instance
+        asr_engine_instance = await ASREngine.get_instance()
+
+        # Load the model
+        await asr_engine_instance.load_model(config)
+
+        # Initialize session manager with ASR components
+        session_manager = SessionManager(asr_engine_instance, config)
+
+        # Mark as ready
+        app.state.asr_ready = True
+        logger.info("✓ ASR service ready")
+
+    except Exception as e:
+        app.state.asr_ready = False
+        app.state.asr_error = str(e)
+        logger.error(f"✗ ASR initialization failed: {e}")
+        logger.warning("Service running in degraded mode - transcription unavailable")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    logger.info("Shutting down ASR service...")
+
+    if asr_engine_instance:
+        await asr_engine_instance.cleanup()
+
+    logger.info("Shutdown complete")
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "real-time-transcription"}
+    return {
+        "status": "ok",
+        "service": "real-time-transcription",
+        "asr_ready": getattr(app.state, "asr_ready", False)
+    }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    """Health check with ASR status"""
+    asr_ready = getattr(app.state, "asr_ready", False)
+
+    health_status = {
+        "status": "healthy" if asr_ready else "degraded",
+        "asr_available": asr_ready
+    }
+
+    if not asr_ready:
+        health_status["error"] = getattr(app.state, "asr_error", "Unknown error")
+
+    if asr_ready and asr_engine_instance:
+        health_status["asr_stats"] = asr_engine_instance.get_stats()
+
+    return health_status
 
 
 @app.websocket("/ws/transcribe")
 async def websocket_transcribe(websocket: WebSocket):
     await websocket.accept()
+
+    # Check if ASR is available
+    if not getattr(app.state, "asr_ready", False):
+        await websocket.send_json({
+            "type": "error",
+            "message": "ASR service unavailable",
+            "details": getattr(app.state, "asr_error", "Service not initialized"),
+            "suggestion": "Check GPU availability and model installation"
+        })
+        await websocket.close()
+        return
+
     session_id = str(uuid.uuid4())
     session = None
 
@@ -110,11 +189,15 @@ async def handle_text_message(websocket: WebSocket, session, message: Dict[str, 
 
     elif msg_type == "stop":
         await session.finalize()
+
+        # Get final transcript
+        final_transcript = session.get_final_transcript()
+
         await websocket.send_json({
             "type": "streaming_stopped",
             "session_id": session.session_id,
             "state": session.get_state().value,
-            "final_transcript": ""
+            "final_transcript": final_transcript
         })
         await session.close()
 
@@ -126,21 +209,33 @@ async def handle_text_message(websocket: WebSocket, session, message: Dict[str, 
 
 
 async def handle_audio_data(websocket: WebSocket, session, audio_bytes: bytes):
+    """Process audio data and send transcription results"""
     if session.get_state() != SessionState.STREAMING:
         logger.warning(f"Received audio in state {session.get_state()}, ignoring")
         return
 
     try:
-        await session.add_audio_chunk(audio_bytes)
+        # Process audio and get transcription results
+        results = await session.add_audio_chunk(audio_bytes)
 
+        # Send all transcript results to client
+        for result in results:
+            await websocket.send_json(result)
+
+        # Debug logging
+        if results:
+            logger.debug(f"Processed {len(audio_bytes)} bytes → {len(results)} results")
+
+    except RuntimeError as e:
+        # ASR-specific errors (model not loaded, GPU OOM, etc.)
+        logger.error(f"ASR error: {e}")
         await websocket.send_json({
-            "type": "partial_transcript",
-            "text": f"[Received {len(audio_bytes)} bytes]",
-            "is_partial": True
+            "type": "error",
+            "message": "ASR processing error",
+            "details": str(e)
         })
-
     except Exception as e:
-        logger.error(f"Error handling audio: {e}")
+        logger.error(f"Error handling audio: {e}", exc_info=True)
         await websocket.send_json({
             "type": "error",
             "message": "Error processing audio"
