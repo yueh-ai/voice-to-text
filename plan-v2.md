@@ -113,12 +113,15 @@ GET /v1/metrics
 
 **Goal**: Get a working service with fake transcription.
 
+**Detailed plan**: [phase1-plan.md](./phase1-plan.md)
+
 Deliverables:
 
 - Mock ASR model that:
   - Accepts audio chunks
-  - Returns realistic fake text with configurable delay
-  - Simulates partial → final behavior
+  - Uses real VAD (WebRTC) for silence detection
+  - Returns fake text proportional to audio byte length
+  - Independent fragments (client concatenates)
 
 - Basic FastAPI/Starlette service with:
   - Health endpoint
@@ -127,6 +130,7 @@ Deliverables:
 
 Exit criteria:
 - Can connect via WebSocket and receive mock transcriptions
+- VAD correctly distinguishes speech from silence
 - Service starts in < 2 seconds
 
 ---
