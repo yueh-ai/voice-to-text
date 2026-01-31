@@ -1,14 +1,5 @@
 # Scalable Transcription Service - Backend Plan
 
-## Purpose Shift
-
-**Previous**: Single-customer real-time transcription demo with NeMo model
-**New**: Learn how to build a **scalable, fast transcription backend** that can serve many concurrent users
-
-This is a **learning/prototyping project** focused on architecture patterns, not model deployment.
-
----
-
 ## Objective
 
 Build a **backend-only transcription service** that:

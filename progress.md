@@ -6,35 +6,46 @@
 
 This is a **voice-to-text transcription service backend** project focused on learning scalable backend patterns with a mocked ASR (Automatic Speech Recognition) model.
 
-## Current Phase: Shared Model Architecture Refactor ✅
+## Current Phase: Phase 2 — Session Management ✅
 
-Refactored architecture to separate **model weights** (shared singleton) from **inference state** (per-user session). This prepares the codebase for real GPU models in future phases.
+Implemented centralized session management with lifecycle states, background cleanup, concurrent connection limits, and session inspection endpoints.
 
-| Aspect | Status |
-|--------|--------|
-| Planning Documents | ✅ Complete |
-| Test Definitions | ✅ Complete (31 tests) |
-| Source Code | ✅ Implemented |
-| Tests Passing | ✅ All 31 passing |
+| Aspect             | Status                 |
+| ------------------ | ---------------------- |
+| Planning Documents | ✅ Complete            |
+| Test Definitions   | ✅ Complete (76 tests) |
+| Source Code        | ✅ Implemented         |
+| Tests Passing      | ✅ All 76 passing      |
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│            Shared Models (Singleton)                │
-│   ┌─────────────┐           ┌─────────────┐        │
-│   │  VADModel   │           │  ASRModel   │        │
-│   │  (weights)  │           │  (weights)  │        │
-│   └─────────────┘           └─────────────┘        │
-└─────────────────────────────────────────────────────┘
-              │                       │
-    ┌─────────┼───────────────────────┼─────────┐
-    ▼         ▼                       ▼         ▼
-┌────────┐ ┌────────┐           ┌────────┐ ┌────────┐
-│Session1│ │Session2│    ...    │SessionN│ │SessionM│
-│-vad_ctx│ │-vad_ctx│           │-vad_ctx│ │-vad_ctx│
-│-buffer │ │-buffer │           │-buffer │ │-buffer │
-└────────┘ └────────┘           └────────┘ └────────┘
+┌─────────────────────────────────────────────────────────────┐
+│               Shared Models (Singleton)                     │
+│   ┌─────────────┐           ┌─────────────┐                │
+│   │  VADModel   │           │  ASRModel   │                │
+│   │  (weights)  │           │  (weights)  │                │
+│   └─────────────┘           └─────────────┘                │
+└─────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+     ┌─────────────────────────────────────────────┐
+     │            SessionManager                    │
+     │  - Tracks all sessions with unique IDs       │
+     │  - Enforces concurrent session limits        │
+     │  - Background cleanup of idle sessions       │
+     │  - Aggregated metrics                        │
+     └─────────────────────────────────────────────┘
+              │               │               │
+              ▼               ▼               ▼
+         ┌────────┐     ┌────────┐     ┌────────┐
+         │Session1│     │Session2│     │SessionN│
+         │-state  │     │-state  │     │-state  │
+         │-metrics│     │-metrics│     │-metrics│
+         │-vad_ctx│     │-vad_ctx│     │-vad_ctx│
+         │-buffer │     │-buffer │     │-buffer │
+         └────────┘     └────────┘     └────────┘
 ```
 
 ## Project Structure
@@ -42,17 +53,20 @@ Refactored architecture to separate **model weights** (shared singleton) from **
 ```
 src/transcription_service/
 ├── __init__.py           # Package with version
-├── main.py               # FastAPI app with lifespan (model init)
-├── config.py             # Pydantic settings
+├── main.py               # FastAPI app with lifespan (model init + session manager)
+├── config.py             # Pydantic settings (incl. session limits)
+├── dependencies.py       # FastAPI dependencies (session manager access)
 ├── api/
 │   ├── __init__.py
-│   ├── health.py         # GET /v1/health
+│   ├── health.py         # GET /v1/health (incl. active session count)
 │   ├── transcribe.py     # POST /v1/transcribe
-│   └── stream.py         # WS /v1/transcribe/stream
+│   ├── stream.py         # WS /v1/transcribe/stream (uses session manager)
+│   └── sessions.py       # GET /v1/sessions, GET /v1/sessions/metrics, DELETE /v1/sessions/{id}
 └── core/
     ├── __init__.py
-    ├── models.py         # Shared Models container (NEW)
-    ├── session.py        # TranscriptionSession per-user state (NEW)
+    ├── models.py         # Shared Models container
+    ├── session.py        # TranscriptionSession with lifecycle state + metrics
+    ├── session_manager.py # SessionManager (centralized registry)
     ├── vad.py            # VADModel (shared) + VADSession (per-user)
     ├── mock_asr.py       # MockASRModel (stateless)
     └── text_generator.py # Fake text generation
@@ -60,114 +74,125 @@ src/transcription_service/
 
 ## Components Implemented
 
-### Shared Models (Singleton)
+### Phase 1 & 1.5: Shared Model Architecture ✅
 
-1. **Models Container (`core/models.py`)**
-   - [x] `Models` dataclass holding VAD and ASR models
-   - [x] `init_models(config)` - Load at app startup
-   - [x] `get_models()` - FastAPI dependency for access
+1. **Models Container (`core/models.py`)** — Shared singleton for VAD/ASR models
+2. **VADModel (`core/vad.py`)** — Shared WebRTC VAD instance
+3. **MockASRModel (`core/mock_asr.py`)** — Stateless mock transcription
+4. **TranscriptionSession (`core/session.py`)** — Per-user state with VAD session
 
-2. **VADModel (`core/vad.py`)**
-   - [x] Shared WebRTC VAD instance (stateless)
-   - [x] `is_speech(frame)` - Inference on single frame
+### Phase 2: Session Management ✅
 
-3. **MockASRModel (`core/mock_asr.py`)**
-   - [x] Stateless text generation
-   - [x] `transcribe(audio)` - Async with latency
-   - [x] `transcribe_sync(audio)` - Sync version
+5. **Session Lifecycle States (`core/session.py`)**
+   - [x] `SessionState` enum: CREATED → ACTIVE → CLOSING → CLOSED
+   - [x] `SessionMetrics` dataclass for per-session metrics
+   - [x] `SessionInfo` dataclass for inspection
+   - [x] `SessionClosingError` exception
+   - [x] State transitions on audio processing
+   - [x] `close()` method for graceful shutdown
 
-### Per-User Sessions
+6. **SessionManager (`core/session_manager.py`)**
+   - [x] Centralized session registry with unique IDs
+   - [x] `create_session()` with limit enforcement
+   - [x] `get_session()` / `close_session()` operations
+   - [x] Background cleanup task for idle sessions
+   - [x] `get_active_count()` / `get_all_sessions()` / `get_aggregate_metrics()`
+   - [x] `SessionManagerConfig` for limits/timeouts
+   - [x] `SessionLimitExceeded` / `SessionNotFound` exceptions
 
-4. **TranscriptionSession (`core/session.py`)**
-   - [x] Holds per-user VADSession
-   - [x] Tracks speech buffer and silence duration
-   - [x] `process_chunk(audio)` - Streaming transcription
-   - [x] `transcribe_full(audio)` - Full file transcription
+7. **App Integration (`main.py`)**
+   - [x] SessionManager initialized in lifespan
+   - [x] Config-driven limits from Settings
+   - [x] Graceful shutdown closes all sessions
 
-5. **VADSession (`core/vad.py`)**
-   - [x] Per-user audio buffer
-   - [x] Delegates inference to shared VADModel
+8. **Updated Stream Endpoint (`api/stream.py`)**
+   - [x] Uses SessionManager for session creation
+   - [x] Sends `session_start` message with session ID
+   - [x] Handles `SessionLimitExceeded` with error response
+   - [x] Handles `SessionClosingError` during processing
+   - [x] Cleanup in `finally` block on disconnect
 
-### API Endpoints
+9. **Session Inspection Endpoints (`api/sessions.py`)**
+   - [x] `GET /v1/sessions` — List all active sessions
+   - [x] `GET /v1/sessions/metrics` — Aggregated metrics
+   - [x] `DELETE /v1/sessions/{session_id}` — Force terminate
 
-6. **App Startup (`main.py`)**
-   - [x] FastAPI lifespan for model initialization
-   - [x] Models loaded once at startup
+10. **Updated Health Endpoint (`api/health.py`)**
+    - [x] Includes `active_sessions` count
 
-7. **Endpoints (Updated)**
-   - [x] Use `get_models()` for shared singleton
-   - [x] Create lightweight `TranscriptionSession` per request/connection
+11. **Configuration (`config.py`)**
+    - [x] `max_sessions` (default: 1000)
+    - [x] `session_idle_timeout_seconds` (default: 300.0)
+    - [x] `session_cleanup_interval_seconds` (default: 30.0)
 
 ## Test Status
 
 ```
-Total Tests: 31
-Passing: 31
+Total Tests: 76
+Passing: 76
 Failing: 0
 ```
 
-### Original Tests (9)
-- `test_health_returns_ok_status` ✅
-- `test_health_includes_version` ✅
-- `test_stream_connection_succeeds` ✅
-- `test_stream_stop_command_closes_cleanly` ✅
-- `test_stream_audio_returns_response` ✅
-- `test_stream_returns_partial_with_text` ✅
-- `test_transcribe_returns_text_for_audio` ✅
-- `test_transcribe_returns_duration` ✅
-- `test_transcribe_rejects_empty_audio` ✅
+### Phase 1/1.5 Tests (31)
 
-### New Tests - VADModel/VADSession (10)
-- `test_model_is_stateless` ✅
-- `test_model_is_speech_on_single_frame` ✅
-- `test_model_validates_sample_rate` ✅
-- `test_model_validates_aggressiveness` ✅
-- `test_session_has_buffer` ✅
-- `test_session_accumulates_buffer` ✅
-- `test_session_returns_true_when_buffer_insufficient` ✅
-- `test_session_delegates_to_model` ✅
-- `test_session_reset_clears_buffer` ✅
-- `test_multiple_sessions_share_model` ✅
+| Test File            | Count | Description                  |
+| -------------------- | ----- | ---------------------------- |
+| test_health.py       | 2     | Health endpoint              |
+| test_stream.py       | 4     | WebSocket streaming          |
+| test_transcribe.py   | 3     | REST transcription           |
+| test_vad_refactor.py | 10    | VAD model/session separation |
+| test_models.py       | 5     | Models container             |
+| test_session.py      | 7     | TranscriptionSession core    |
 
-### New Tests - Models Container (5)
-- `test_models_container_holds_vad_and_asr` ✅
-- `test_init_models_creates_singleton` ✅
-- `test_get_models_raises_before_init` ✅
-- `test_init_models_creates_vad_model` ✅
-- `test_init_models_creates_asr_model` ✅
+### Phase 2 Tests (45)
 
-### New Tests - TranscriptionSession (7)
-- `test_session_created_with_models_and_config` ✅
-- `test_session_has_vad_session` ✅
-- `test_session_has_per_user_state` ✅
-- `test_process_chunk_returns_transcript_result` ✅
-- `test_process_chunk_generates_partial_for_speech` ✅
-- `test_multiple_sessions_have_isolated_state` ✅
-- `test_transcribe_full_uses_shared_model` ✅
+| Test File                 | Count | Description                              |
+| ------------------------- | ----- | ---------------------------------------- |
+| test_session_lifecycle.py | 13    | Session states, metrics, timestamps      |
+| test_session_manager.py   | 18    | Manager operations, cleanup, concurrency |
+| test_session_api.py       | 5     | Session inspection endpoints             |
+| test_concurrent.py        | 8     | WebSocket concurrency, graceful shutdown |
+
+## Exit Criteria (Phase 2) ✅
+
+- [x] `SessionManager` tracks all sessions with unique IDs
+- [x] Session lifecycle states transition correctly
+- [x] 100 concurrent WebSocket connections work without issues
+- [x] Sessions clean up properly on client disconnect
+- [x] Idle sessions are automatically cleaned up after timeout
+- [x] `GET /v1/sessions` lists active sessions
+- [x] `GET /v1/sessions/metrics` returns aggregated metrics
+- [x] `GET /v1/health` includes active session count
+- [x] Max session limit is enforced with clear error
+- [x] All 76 tests pass
 
 ## 5-Phase Roadmap
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Mock Model & Core Service | ✅ **Complete** |
-| 1.5 | Shared Model Architecture | ✅ **Complete** |
-| 2 | Session Management | Planned |
-| 3 | Performance & Scaling | Planned |
-| 4 | Load Testing & Observability | Planned |
-| 5 | Production Readiness | Planned |
+| Phase | Description                  | Status          |
+| ----- | ---------------------------- | --------------- |
+| 1     | Mock Model & Core Service    | ✅ **Complete** |
+| 1.5   | Shared Model Architecture    | ✅ **Complete** |
+| 2     | Session Management           | ✅ **Complete** |
+| 3     | Performance & Scaling        | Planned         |
+| 4     | Load Testing & Observability | Planned         |
+| 5     | Production Readiness         | Planned         |
 
-## Benefits of New Architecture
+## Key Achievements (Phase 2)
 
-1. **Memory Efficient**: Single model instance regardless of connection count
-2. **Fast Startup**: Models loaded once, sessions are lightweight
-3. **Scalable**: Ready for real GPU models (Silero VAD, Whisper/Canary ASR)
-4. **Testable**: Clean separation allows mocking at model or session level
-5. **Maintainable**: Clear distinction between shared and per-user state
+1. **Centralized Session Registry**: All sessions tracked with unique UUIDs
+2. **Lifecycle State Machine**: Clean 4-state transitions (CREATED → ACTIVE → CLOSING → CLOSED)
+3. **Concurrent Connection Limits**: Configurable max sessions with clear error handling
+4. **Automatic Cleanup**: Background task removes idle/disconnected sessions
+5. **Per-Session Metrics**: Audio bytes, chunks, transcripts tracked per session
+6. **Inspection Endpoints**: Admin visibility into active sessions and metrics
+7. **Graceful Shutdown**: All sessions properly closed on server stop
 
-## Next Steps (Phase 2)
+## Next Steps (Phase 3)
 
-Phase 2 will focus on session management:
-- Multiple concurrent users stress testing
-- Session lifecycle management
-- Resource cleanup and connection limits
-- Real model integration (swap mock for Silero/Whisper)
+Phase 3 will focus on performance and scaling:
+
+- Connection pooling and resource optimization
+- Memory profiling and leak detection
+- Real model integration (swap mock for Silero VAD / Whisper ASR)
+- Multi-worker considerations
+- External session state (Redis) for horizontal scaling
