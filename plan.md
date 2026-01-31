@@ -79,12 +79,14 @@ WS /v1/transcribe/stream
 ```
 
 **Client → Server Messages:**
+
 ```json
 { "type": "audio_chunk", "data": "<base64 audio>", "sequence": 1 }
 { "type": "stop" }
 ```
 
 **Server → Client Messages:**
+
 ```json
 { "type": "partial", "text": "Hello wor", "timestamp": 1234567890 }
 { "type": "final", "text": "Hello world", "timestamp": 1234567891 }
@@ -129,6 +131,7 @@ Deliverables:
   - Single REST endpoint
 
 Exit criteria:
+
 - Can connect via WebSocket and receive mock transcriptions
 - VAD correctly distinguishes speech from silence
 - Service starts in < 2 seconds
@@ -156,6 +159,7 @@ Deliverables:
   - Duration
 
 Exit criteria:
+
 - 100 concurrent sessions without issues
 - Sessions clean up properly on disconnect
 - No memory leaks over time
@@ -183,6 +187,7 @@ Deliverables:
   - Timeouts
 
 Exit criteria:
+
 - Single worker handles 500+ concurrent connections
 - Adding workers increases capacity linearly
 - p99 latency < 100ms for mock responses
@@ -212,6 +217,7 @@ Deliverables:
   - Performance timings
 
 Exit criteria:
+
 - Documented capacity limits
 - Graceful degradation under overload
 - Clear visibility into system behavior
@@ -225,6 +231,7 @@ Exit criteria:
 Deliverables:
 
 - Model interface abstraction:
+
   ```python
   class ASRModel(Protocol):
       async def transcribe_chunk(self, audio: bytes) -> TranscriptResult
@@ -246,6 +253,7 @@ Deliverables:
   - How to swap in real model
 
 Exit criteria:
+
 - `docker run` starts a working service
 - Real model can be added by implementing one interface
 - Service survives restarts cleanly
@@ -254,13 +262,13 @@ Exit criteria:
 
 ## Technology Choices
 
-| Component | Choice | Rationale |
-|-----------|--------|-----------|
-| Framework | FastAPI + Starlette | Async-native, WebSocket support |
-| WebSocket | starlette.websockets | Built-in, performant |
-| Session State | Redis (or in-memory dict) | Externalized, scalable |
-| Load Testing | locust | Python-native, WebSocket support |
-| Containerization | Docker | Standard deployment |
+| Component        | Choice                    | Rationale                        |
+| ---------------- | ------------------------- | -------------------------------- |
+| Framework        | FastAPI + Starlette       | Async-native, WebSocket support  |
+| WebSocket        | starlette.websockets      | Built-in, performant             |
+| Session State    | Redis (or in-memory dict) | Externalized, scalable           |
+| Load Testing     | locust                    | Python-native, WebSocket support |
+| Containerization | Docker                    | Standard deployment              |
 
 ---
 
@@ -291,6 +299,7 @@ class MockASRModel:
 ```
 
 Configurable parameters:
+
 - `latency_ms`: Simulated processing time
 - `words_per_chunk`: How much text per audio chunk
 - `error_rate`: Simulate occasional failures
@@ -299,13 +308,13 @@ Configurable parameters:
 
 ## Success Metrics
 
-| Metric | Target |
-|--------|--------|
-| Concurrent connections | 1000+ per instance |
-| WebSocket latency (p99) | < 100ms |
-| REST latency (p99) | < 200ms |
-| Memory per session | < 1MB |
-| Startup time | < 3 seconds |
+| Metric                  | Target             |
+| ----------------------- | ------------------ |
+| Concurrent connections  | 1000+ per instance |
+| WebSocket latency (p99) | < 100ms            |
+| REST latency (p99)      | < 200ms            |
+| Memory per session      | < 1MB              |
+| Startup time            | < 3 seconds        |
 
 ---
 
