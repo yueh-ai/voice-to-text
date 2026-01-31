@@ -3,7 +3,8 @@
 from fastapi import APIRouter, Request, HTTPException
 
 from transcription_service.config import get_settings
-from transcription_service.core.mock_asr import MockASRModel
+from transcription_service.core.models import get_models
+from transcription_service.core.session import TranscriptionSession
 
 router = APIRouter()
 
@@ -21,10 +22,11 @@ async def transcribe(request: Request):
     if not audio_data:
         raise HTTPException(status_code=400, detail="Empty audio data")
 
-    # Create ASR model and transcribe
+    # Use shared models via session
     config = get_settings()
-    asr = MockASRModel(config)
-    result = asr.transcribe_full(audio_data)
+    models = get_models()
+    session = TranscriptionSession(models, config)
+    result = session.transcribe_full(audio_data)
 
     return {
         "text": result.text,

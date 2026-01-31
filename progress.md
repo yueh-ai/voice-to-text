@@ -1,29 +1,48 @@
 # Project Progress
 
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-01-31
 
 ## Overview
 
 This is a **voice-to-text transcription service backend** project focused on learning scalable backend patterns with a mocked ASR (Automatic Speech Recognition) model.
 
-## Current Phase: Phase 1 Complete ✅
+## Current Phase: Shared Model Architecture Refactor ✅
 
-Phase 1 (Mock Model & Core Service) has been fully implemented and all tests pass.
+Refactored architecture to separate **model weights** (shared singleton) from **inference state** (per-user session). This prepares the codebase for real GPU models in future phases.
 
 | Aspect | Status |
 |--------|--------|
 | Planning Documents | ✅ Complete |
-| Test Definitions | ✅ Complete (9 tests) |
+| Test Definitions | ✅ Complete (31 tests) |
 | Source Code | ✅ Implemented |
-| Tests Passing | ✅ All 9 passing |
+| Tests Passing | ✅ All 31 passing |
 
-## Phase 1 Implementation (Completed)
+## Architecture Overview
 
-### Project Structure
+```
+┌─────────────────────────────────────────────────────┐
+│            Shared Models (Singleton)                │
+│   ┌─────────────┐           ┌─────────────┐        │
+│   │  VADModel   │           │  ASRModel   │        │
+│   │  (weights)  │           │  (weights)  │        │
+│   └─────────────┘           └─────────────┘        │
+└─────────────────────────────────────────────────────┘
+              │                       │
+    ┌─────────┼───────────────────────┼─────────┐
+    ▼         ▼                       ▼         ▼
+┌────────┐ ┌────────┐           ┌────────┐ ┌────────┐
+│Session1│ │Session2│    ...    │SessionN│ │SessionM│
+│-vad_ctx│ │-vad_ctx│           │-vad_ctx│ │-vad_ctx│
+│-buffer │ │-buffer │           │-buffer │ │-buffer │
+└────────┘ └────────┘           └────────┘ └────────┘
+```
+
+## Project Structure
+
 ```
 src/transcription_service/
 ├── __init__.py           # Package with version
-├── main.py               # FastAPI app entry point
+├── main.py               # FastAPI app with lifespan (model init)
 ├── config.py             # Pydantic settings
 ├── api/
 │   ├── __init__.py
@@ -32,62 +51,62 @@ src/transcription_service/
 │   └── stream.py         # WS /v1/transcribe/stream
 └── core/
     ├── __init__.py
-    ├── vad.py            # WebRTC VAD wrapper
-    ├── mock_asr.py       # Mock ASR model
+    ├── models.py         # Shared Models container (NEW)
+    ├── session.py        # TranscriptionSession per-user state (NEW)
+    ├── vad.py            # VADModel (shared) + VADSession (per-user)
+    ├── mock_asr.py       # MockASRModel (stateless)
     └── text_generator.py # Fake text generation
 ```
 
-### Components Implemented
+## Components Implemented
 
-1. **Configuration (`config.py`)**
-   - [x] Pydantic settings with environment variable support
-   - [x] Audio parameters (sample rate, sample width)
-   - [x] VAD settings (aggressiveness, frame duration, endpointing)
-   - [x] Text generation parameters
+### Shared Models (Singleton)
 
-2. **Health Endpoint (`api/health.py`)**
-   - [x] `GET /v1/health` returns status and version
+1. **Models Container (`core/models.py`)**
+   - [x] `Models` dataclass holding VAD and ASR models
+   - [x] `init_models(config)` - Load at app startup
+   - [x] `get_models()` - FastAPI dependency for access
 
-3. **VAD Wrapper (`core/vad.py`)**
-   - [x] WebRTC VAD integration
-   - [x] Supports 10ms, 20ms, 30ms frame durations
-   - [x] Handles frame buffering for arbitrary chunk sizes
+2. **VADModel (`core/vad.py`)**
+   - [x] Shared WebRTC VAD instance (stateless)
+   - [x] `is_speech(frame)` - Inference on single frame
 
-4. **Text Generator (`core/text_generator.py`)**
-   - [x] ~230 word vocabulary
-   - [x] Generates fake text proportional to audio byte length
+3. **MockASRModel (`core/mock_asr.py`)**
+   - [x] Stateless text generation
+   - [x] `transcribe(audio)` - Async with latency
+   - [x] `transcribe_sync(audio)` - Sync version
 
-5. **Mock ASR Model (`core/mock_asr.py`)**
-   - [x] Combines VAD + text generator
-   - [x] Streaming support with partial results
-   - [x] Silence-based endpointing
-   - [x] Full-file transcription support
+### Per-User Sessions
 
-6. **REST Endpoint (`api/transcribe.py`)**
-   - [x] `POST /v1/transcribe` accepts raw audio
-   - [x] Returns fake transcription text and duration
-   - [x] Validates non-empty audio
+4. **TranscriptionSession (`core/session.py`)**
+   - [x] Holds per-user VADSession
+   - [x] Tracks speech buffer and silence duration
+   - [x] `process_chunk(audio)` - Streaming transcription
+   - [x] `transcribe_full(audio)` - Full file transcription
 
-7. **WebSocket Endpoint (`api/stream.py`)**
-   - [x] `WS /v1/transcribe/stream` for real-time streaming
-   - [x] Accepts base64-encoded audio chunks
-   - [x] Returns partial results during speech
-   - [x] Returns final result after silence threshold
-   - [x] Handles stop command for clean disconnect
+5. **VADSession (`core/vad.py`)**
+   - [x] Per-user audio buffer
+   - [x] Delegates inference to shared VADModel
 
-### Dependencies Added
-- `webrtcvad>=2.0.10` - Voice activity detection
-- `setuptools` - Required by webrtcvad for pkg_resources
+### API Endpoints
+
+6. **App Startup (`main.py`)**
+   - [x] FastAPI lifespan for model initialization
+   - [x] Models loaded once at startup
+
+7. **Endpoints (Updated)**
+   - [x] Use `get_models()` for shared singleton
+   - [x] Create lightweight `TranscriptionSession` per request/connection
 
 ## Test Status
 
 ```
-Total Tests: 9
-Passing: 9
+Total Tests: 31
+Passing: 31
 Failing: 0
 ```
 
-All tests pass:
+### Original Tests (9)
 - `test_health_returns_ok_status` ✅
 - `test_health_includes_version` ✅
 - `test_stream_connection_succeeds` ✅
@@ -98,27 +117,57 @@ All tests pass:
 - `test_transcribe_returns_duration` ✅
 - `test_transcribe_rejects_empty_audio` ✅
 
-## Phase 1 Exit Criteria
+### New Tests - VADModel/VADSession (10)
+- `test_model_is_stateless` ✅
+- `test_model_is_speech_on_single_frame` ✅
+- `test_model_validates_sample_rate` ✅
+- `test_model_validates_aggressiveness` ✅
+- `test_session_has_buffer` ✅
+- `test_session_accumulates_buffer` ✅
+- `test_session_returns_true_when_buffer_insufficient` ✅
+- `test_session_delegates_to_model` ✅
+- `test_session_reset_clears_buffer` ✅
+- `test_multiple_sessions_share_model` ✅
 
-- [x] `GET /v1/health` returns 200
-- [x] `POST /v1/transcribe` accepts audio, returns fake text
-- [x] `WS /v1/transcribe/stream` accepts chunks, returns partials and finals
-- [x] VAD correctly distinguishes speech from silence
-- [x] All tests pass
+### New Tests - Models Container (5)
+- `test_models_container_holds_vad_and_asr` ✅
+- `test_init_models_creates_singleton` ✅
+- `test_get_models_raises_before_init` ✅
+- `test_init_models_creates_vad_model` ✅
+- `test_init_models_creates_asr_model` ✅
+
+### New Tests - TranscriptionSession (7)
+- `test_session_created_with_models_and_config` ✅
+- `test_session_has_vad_session` ✅
+- `test_session_has_per_user_state` ✅
+- `test_process_chunk_returns_transcript_result` ✅
+- `test_process_chunk_generates_partial_for_speech` ✅
+- `test_multiple_sessions_have_isolated_state` ✅
+- `test_transcribe_full_uses_shared_model` ✅
 
 ## 5-Phase Roadmap
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Mock Model & Core Service | ✅ **Complete** |
+| 1.5 | Shared Model Architecture | ✅ **Complete** |
 | 2 | Session Management | Planned |
 | 3 | Performance & Scaling | Planned |
 | 4 | Load Testing & Observability | Planned |
 | 5 | Production Readiness | Planned |
 
+## Benefits of New Architecture
+
+1. **Memory Efficient**: Single model instance regardless of connection count
+2. **Fast Startup**: Models loaded once, sessions are lightweight
+3. **Scalable**: Ready for real GPU models (Silero VAD, Whisper/Canary ASR)
+4. **Testable**: Clean separation allows mocking at model or session level
+5. **Maintainable**: Clear distinction between shared and per-user state
+
 ## Next Steps (Phase 2)
 
 Phase 2 will focus on session management:
-- Multiple concurrent users
+- Multiple concurrent users stress testing
 - Session lifecycle management
-- Resource cleanup
+- Resource cleanup and connection limits
+- Real model integration (swap mock for Silero/Whisper)

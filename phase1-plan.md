@@ -317,28 +317,38 @@ Server → Client:
 
 ## Exit Criteria
 
-- [ ] `GET /v1/health` returns 200
-- [ ] `POST /v1/transcribe` accepts audio, returns fake text
-- [ ] `WS /v1/transcribe/stream` accepts chunks, returns partials and finals
-- [ ] VAD correctly distinguishes speech from silence
-- [ ] Service starts in < 2 seconds
-- [ ] All tests pass
+- [x] `GET /v1/health` returns 200
+- [x] `POST /v1/transcribe` accepts audio, returns fake text
+- [x] `WS /v1/transcribe/stream` accepts chunks, returns partials and finals
+- [x] VAD correctly distinguishes speech from silence
+- [x] Service starts in < 2 seconds
+- [x] All tests pass
 
 ---
 
-## Open Questions
+## Open Questions (Resolved)
 
 1. **Audio format for WebSocket**: Base64 encoded PCM, or raw binary frames?
-   - Base64 is safer for JSON, but 33% overhead
-   - Binary frames are efficient but need different message handling
-   - **Recommendation**: Start with base64, optimize later if needed
+   - **Decision**: Base64 for JSON safety, optimize later if needed
 
 2. **Frame size handling**: Client sends arbitrary chunk sizes, VAD needs specific sizes
-   - Buffer incoming audio and process in VAD-compatible frames
-   - Or require client to send correct frame sizes
-   - **Recommendation**: Buffer server-side for flexibility
+   - **Decision**: Buffer server-side for flexibility
 
 3. **Error simulation**: How should `error_rate` work?
-   - Random failures on any chunk?
-   - Specific error types (timeout, invalid audio)?
-   - **Recommendation**: Defer to Phase 2, keep simple for now
+   - **Decision**: Deferred to Phase 2
+
+---
+
+## Phase 1.5: Shared Model Architecture (Completed 2026-01-31)
+
+After Phase 1 completion, the architecture was refactored to separate model weights (shared singleton) from inference state (per-user session). See `changes_plan.md` for the detailed plan and `progress.md` for current status.
+
+**Key Changes:**
+- Split `VADProcessor` → `VADModel` (shared) + `VADSession` (per-user)
+- Made `MockASRModel` stateless
+- Added `Models` container with `init_models()` / `get_models()`
+- Added `TranscriptionSession` for per-user state
+- Updated `main.py` with FastAPI lifespan for model initialization
+- Updated endpoints to use dependency injection
+
+**New Tests Added:** 22 tests for the refactored architecture (31 total)

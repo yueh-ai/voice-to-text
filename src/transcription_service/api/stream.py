@@ -6,7 +6,8 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from transcription_service.config import get_settings
-from transcription_service.core.mock_asr import MockASRModel
+from transcription_service.core.models import get_models
+from transcription_service.core.session import TranscriptionSession
 
 router = APIRouter()
 
@@ -28,7 +29,8 @@ async def stream(websocket: WebSocket):
     await websocket.accept()
 
     config = get_settings()
-    asr = MockASRModel(config)
+    models = get_models()  # Shared singleton
+    session = TranscriptionSession(models, config)  # Lightweight, per-connection
 
     try:
         while True:
@@ -68,7 +70,7 @@ async def stream(websocket: WebSocket):
                     continue
 
                 # Process audio chunk
-                result = await asr.process_chunk(audio_bytes)
+                result = await session.process_chunk(audio_bytes)
 
                 if result.is_final:
                     await websocket.send_json({"type": "final"})
