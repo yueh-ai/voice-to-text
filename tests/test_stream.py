@@ -3,15 +3,14 @@ WebSocket streaming endpoint tests.
 
 Contract:
 - WS /v1/transcribe/stream accepts audio chunks
+- Returns session_start on connection
 - Returns partial results during speech
 - Returns final result after silence/stop
 """
 
-import pytest
 import base64
-import json
 
-from httpx import ASGITransport, AsyncClient
+import pytest
 
 
 @pytest.fixture
@@ -25,65 +24,60 @@ def audio_chunk():
 class TestWebSocketStream:
     """WebSocket streaming tests."""
 
-    async def test_stream_connection_succeeds(self, client):
+    def test_stream_connection_succeeds(self, client):
         """Should be able to connect to the stream endpoint."""
-        from transcription_service.main import app
-        from starlette.testclient import TestClient
+        with client.websocket_connect("/v1/transcribe/stream") as ws:
+            # Receive session_start
+            msg = ws.receive_json()
+            assert msg["type"] == "session_start"
+            ws.send_json({"type": "stop"})
 
-        with TestClient(app) as sync_client:
-            with sync_client.websocket_connect("/v1/transcribe/stream") as ws:
-                # Connection succeeded if we get here
-                ws.send_json({"type": "stop"})
-
-    async def test_stream_stop_command_closes_cleanly(self, client):
+    def test_stream_stop_command_closes_cleanly(self, client):
         """Sending stop command should close the connection."""
-        from transcription_service.main import app
-        from starlette.testclient import TestClient
+        with client.websocket_connect("/v1/transcribe/stream") as ws:
+            # Receive session_start
+            ws.receive_json()
+            ws.send_json({"type": "stop"})
+            # Should close without error
 
-        with TestClient(app) as sync_client:
-            with sync_client.websocket_connect("/v1/transcribe/stream") as ws:
-                ws.send_json({"type": "stop"})
-                # Should close without error
-
-    async def test_stream_audio_returns_response(self, client, audio_chunk):
+    def test_stream_audio_returns_response(self, client, audio_chunk):
         """Sending audio should return some response."""
-        from transcription_service.main import app
-        from starlette.testclient import TestClient
+        with client.websocket_connect("/v1/transcribe/stream") as ws:
+            # Receive session_start
+            msg = ws.receive_json()
+            assert msg["type"] == "session_start"
 
-        with TestClient(app) as sync_client:
-            with sync_client.websocket_connect("/v1/transcribe/stream") as ws:
-                # Send audio chunk
+            # Send audio chunk
+            ws.send_json({"type": "audio", "data": audio_chunk})
+
+            # Should receive a response (partial or final)
+            response = ws.receive_json()
+            assert "type" in response
+
+            ws.send_json({"type": "stop"})
+
+    def test_stream_returns_partial_with_text(self, client, audio_chunk):
+        """Audio chunks should produce partial results with text."""
+        with client.websocket_connect("/v1/transcribe/stream") as ws:
+            # Receive session_start
+            ws.receive_json()
+
+            # Send multiple audio chunks to ensure we get a partial
+            for _ in range(5):
                 ws.send_json({"type": "audio", "data": audio_chunk})
 
-                # Should receive a response (partial or acknowledgment)
-                response = ws.receive_json()
-                assert "type" in response
+            # Collect responses
+            responses = []
+            for _ in range(5):
+                try:
+                    response = ws.receive_json()
+                    responses.append(response)
+                except Exception:
+                    break
 
-                ws.send_json({"type": "stop"})
+            # At least one should be a partial with text
+            partials = [r for r in responses if r.get("type") == "partial"]
+            assert len(partials) > 0
+            assert any("text" in p for p in partials)
 
-    async def test_stream_returns_partial_with_text(self, client, audio_chunk):
-        """Audio chunks should produce partial results with text."""
-        from transcription_service.main import app
-        from starlette.testclient import TestClient
-
-        with TestClient(app) as sync_client:
-            with sync_client.websocket_connect("/v1/transcribe/stream") as ws:
-                # Send multiple audio chunks to ensure we get a partial
-                for _ in range(5):
-                    ws.send_json({"type": "audio", "data": audio_chunk})
-
-                # Collect responses
-                responses = []
-                for _ in range(5):
-                    try:
-                        response = ws.receive_json()
-                        responses.append(response)
-                    except Exception:
-                        break
-
-                # At least one should be a partial with text
-                partials = [r for r in responses if r.get("type") == "partial"]
-                assert len(partials) > 0
-                assert any("text" in p for p in partials)
-
-                ws.send_json({"type": "stop"})
+            ws.send_json({"type": "stop"})

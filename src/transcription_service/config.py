@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Session management (Phase 2)
+    max_sessions: int = 1000
+    session_idle_timeout_seconds: float = 300.0
+    session_cleanup_interval_seconds: float = 30.0
+
     model_config = {"env_prefix": "ASR_"}
 
 

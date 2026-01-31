@@ -5,9 +5,9 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from transcription_service.config import get_settings
-from transcription_service.core.models import get_models
-from transcription_service.core.session import TranscriptionSession
+from transcription_service.dependencies import get_session_manager
+from transcription_service.core.session_manager import SessionLimitExceeded
+from transcription_service.core.session import SessionClosingError
 
 router = APIRouter()
 
@@ -22,17 +22,35 @@ async def stream(websocket: WebSocket):
         { "type": "stop" }
 
     Server -> Client:
+        { "type": "session_start", "session_id": "..." }
         { "type": "partial", "text": "hello world" }
         { "type": "final" }
         { "type": "error", "message": "...", "code": "..." }
     """
     await websocket.accept()
 
-    config = get_settings()
-    models = get_models()  # Shared singleton
-    session = TranscriptionSession(models, config)  # Lightweight, per-connection
+    session_manager = get_session_manager()
+    session = None
 
     try:
+        # Create session (may raise SessionLimitExceeded)
+        try:
+            session = await session_manager.create_session()
+        except SessionLimitExceeded as e:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e),
+                "code": "SESSION_LIMIT",
+            })
+            await websocket.close(code=1008)  # Policy violation
+            return
+
+        # Send session ID to client
+        await websocket.send_json({
+            "type": "session_start",
+            "session_id": session.get_info().session_id,
+        })
+
         while True:
             # Receive message
             try:
@@ -70,7 +88,15 @@ async def stream(websocket: WebSocket):
                     continue
 
                 # Process audio chunk
-                result = await session.process_chunk(audio_bytes)
+                try:
+                    result = await session.process_chunk(audio_bytes)
+                except SessionClosingError:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Session is closing",
+                        "code": "SESSION_CLOSING",
+                    })
+                    break
 
                 if result.is_final:
                     await websocket.send_json({"type": "final"})
@@ -90,3 +116,7 @@ async def stream(websocket: WebSocket):
     except WebSocketDisconnect:
         # Client disconnected, clean up
         pass
+    finally:
+        # Always clean up
+        if session:
+            await session_manager.close_session(session.get_info().session_id)

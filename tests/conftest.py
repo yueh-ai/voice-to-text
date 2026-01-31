@@ -1,16 +1,13 @@
 import pytest
-from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
 
 @pytest.fixture
-async def client():
-    """Async HTTP client for testing the API."""
+def client():
+    """Sync test client that triggers app lifespan."""
     from transcription_service.main import app
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test"
-    ) as client:
+    with TestClient(app) as client:
         yield client
 
 
