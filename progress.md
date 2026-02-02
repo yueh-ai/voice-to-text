@@ -187,12 +187,25 @@ Failing: 0
 6. **Inspection Endpoints**: Admin visibility into active sessions and metrics
 7. **Graceful Shutdown**: All sessions properly closed on server stop
 
+## Baseline Performance (Pre-Phase 3)
+
+Load testing performed before Phase 3 optimizations:
+
+| Metric | Target | Baseline (200 users) | Status |
+|--------|--------|---------------------|--------|
+| WebSocket p99 latency | < 100ms | 86ms | PASS |
+| REST p99 latency | < 200ms | 140ms | PASS |
+| Concurrent users | 1000+ | 200 tested (0 failures) | Partial |
+| Throughput | - | ~2,700 req/s | - |
+
+See `loadtests/BASELINE_RESULTS.md` for full details.
+
 ## Next Steps (Phase 3)
 
 Phase 3 will focus on performance and scaling:
 
+- Multi-worker deployment (`--workers N`)
 - Connection pooling and resource optimization
 - Memory profiling and leak detection
-- Real model integration (swap mock for Silero VAD / Whisper ASR)
-- Multi-worker considerations
+- Backpressure for slow clients
 - External session state (Redis) for horizontal scaling
