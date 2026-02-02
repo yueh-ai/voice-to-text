@@ -18,7 +18,7 @@ A scalable transcription service backend demonstrating production-ready patterns
 uv sync
 
 # Run the server
-uv run uvicorn transcription_service.main:app --reload
+uv run uvicorn transcription_service.main:app --reload --port 8001
 
 # Server runs at http://localhost:8001
 ```
