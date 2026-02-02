@@ -48,3 +48,15 @@ app.include_router(health.router)
 app.include_router(transcribe.router)
 app.include_router(stream.router)
 app.include_router(sessions.router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "transcription_service.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True,
+    )
