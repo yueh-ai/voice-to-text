@@ -115,7 +115,7 @@ class TranscriptionSession:
             TranscriptResult with transcription status:
             - text with is_final=False if speech detected
             - empty text with is_final=False if silence (waiting for more)
-            - empty text with is_final=True if silence threshold reached
+            - empty text with is_final=True if silence threshold reached (only after speech started)
 
         Raises:
             SessionClosingError: If session is closing or closed
@@ -123,10 +123,6 @@ class TranscriptionSession:
         # Check if session is accepting audio
         if self._state in (SessionState.CLOSING, SessionState.CLOSED):
             raise SessionClosingError("Session is closing, cannot accept audio")
-
-        # Transition from CREATED to ACTIVE on first audio
-        if self._state == SessionState.CREATED:
-            self._state = SessionState.ACTIVE
 
         # Update activity timestamp and metrics
         self._last_activity_at = datetime.now(timezone.utc)
@@ -141,6 +137,10 @@ class TranscriptionSession:
         chunk_duration_ms = self._chunk_duration_ms(audio)
 
         if self.vad_session.is_speech(audio):
+            # Transition to ACTIVE on first speech (not just any audio)
+            if self._state == SessionState.CREATED:
+                self._state = SessionState.ACTIVE
+
             self._speech_buffer_bytes += len(audio)
             self._silence_duration_ms = 0
 
@@ -156,6 +156,17 @@ class TranscriptionSession:
                 duration_ms=self.config.latency_ms,
             )
         else:
+            # While in CREATED state (waiting for first speech), don't do endpointing
+            # Just return empty partial - user hasn't started speaking yet
+            if self._state == SessionState.CREATED:
+                self._metrics.transcripts_sent += 1
+                return TranscriptResult(
+                    text="",
+                    is_final=False,
+                    duration_ms=self.config.latency_ms,
+                )
+
+            # In ACTIVE state, track silence for endpointing
             self._silence_duration_ms += chunk_duration_ms
 
             if self._silence_duration_ms >= self.config.endpointing_ms:
