@@ -168,7 +168,8 @@ class TestIdleCleanup:
         # Very short timeout for testing
         manager_config = SessionManagerConfig(
             max_sessions=10,
-            idle_timeout_seconds=0.1,  # 100ms
+            initial_speech_timeout_seconds=0.1,  # 100ms for CREATED
+            idle_timeout_seconds=0.1,  # 100ms for ACTIVE
             cleanup_interval_seconds=0.05,  # 50ms
         )
         manager = SessionManager(models, config, manager_config)
@@ -182,6 +183,77 @@ class TestIdleCleanup:
             await asyncio.sleep(0.3)
 
             # Session should have been cleaned up
+            with pytest.raises(SessionNotFound):
+                await manager.get_session(session_id)
+        finally:
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_created_sessions_have_shorter_timeout(self, config):
+        """Sessions in CREATED state should timeout faster than ACTIVE sessions."""
+        models = get_models()
+        # Short initial timeout, longer idle timeout
+        manager_config = SessionManagerConfig(
+            max_sessions=10,
+            initial_speech_timeout_seconds=0.1,  # 100ms for CREATED
+            idle_timeout_seconds=2.0,  # 2s for ACTIVE (much longer)
+            cleanup_interval_seconds=0.05,  # 50ms
+        )
+        manager = SessionManager(models, config, manager_config)
+        await manager.start()
+
+        try:
+            session = await manager.create_session()
+            session_id = session.get_info().session_id
+
+            # Session is in CREATED state (no speech yet)
+            from transcription_service.core.session import SessionState
+            assert session.get_info().state == SessionState.CREATED
+
+            # Wait for initial speech timeout (but less than idle timeout)
+            await asyncio.sleep(0.25)
+
+            # CREATED session should have been cleaned up due to shorter timeout
+            with pytest.raises(SessionNotFound):
+                await manager.get_session(session_id)
+        finally:
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_active_sessions_use_longer_timeout(self, config):
+        """Sessions in ACTIVE state should use the longer idle timeout."""
+        models = get_models()
+        manager_config = SessionManagerConfig(
+            max_sessions=10,
+            initial_speech_timeout_seconds=0.1,  # 100ms for CREATED
+            idle_timeout_seconds=0.5,  # 500ms for ACTIVE
+            cleanup_interval_seconds=0.05,  # 50ms
+        )
+        manager = SessionManager(models, config, manager_config)
+        await manager.start()
+
+        try:
+            session = await manager.create_session()
+            session_id = session.get_info().session_id
+
+            # Make session ACTIVE by sending speech
+            speech_audio = b"\x00\x10" * 640
+            await session.process_chunk(speech_audio)
+
+            from transcription_service.core.session import SessionState
+            assert session.get_info().state == SessionState.ACTIVE
+
+            # Wait longer than initial_speech_timeout but less than idle_timeout
+            await asyncio.sleep(0.25)
+
+            # Session should still exist (using longer ACTIVE timeout)
+            retrieved = await manager.get_session(session_id)
+            assert retrieved is not None
+
+            # Wait for full idle timeout
+            await asyncio.sleep(0.4)
+
+            # Now it should be cleaned up
             with pytest.raises(SessionNotFound):
                 await manager.get_session(session_id)
         finally:

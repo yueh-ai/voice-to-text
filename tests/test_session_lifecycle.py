@@ -61,18 +61,80 @@ class TestSessionLifecycleStates:
         assert info.state == SessionState.CREATED
 
     @pytest.mark.asyncio
-    async def test_session_transitions_to_active_on_first_audio(
-        self, session, speech_audio
+    async def test_session_stays_created_when_receiving_silence(
+        self, session, silence_audio
     ):
-        """Session should transition to ACTIVE when first audio is received."""
+        """Session should stay in CREATED state when only silence is received."""
         # Initially CREATED
         assert session.get_info().state == SessionState.CREATED
 
-        # Process first audio chunk
+        # Process silence - should NOT transition to ACTIVE
+        await session.process_chunk(silence_audio)
+        await session.process_chunk(silence_audio)
+        await session.process_chunk(silence_audio)
+
+        # Still CREATED - waiting for speech
+        assert session.get_info().state == SessionState.CREATED
+
+    @pytest.mark.asyncio
+    async def test_session_transitions_to_active_on_first_speech(
+        self, session, speech_audio
+    ):
+        """Session should transition to ACTIVE only when speech is detected."""
+        # Initially CREATED
+        assert session.get_info().state == SessionState.CREATED
+
+        # Process speech audio
         await session.process_chunk(speech_audio)
 
         # Now ACTIVE
         assert session.get_info().state == SessionState.ACTIVE
+
+    @pytest.mark.asyncio
+    async def test_session_transitions_to_active_after_initial_silence(
+        self, session, silence_audio, speech_audio
+    ):
+        """Session should transition to ACTIVE when speech follows silence."""
+        # Process silence first
+        await session.process_chunk(silence_audio)
+        await session.process_chunk(silence_audio)
+        assert session.get_info().state == SessionState.CREATED
+
+        # Now speech
+        await session.process_chunk(speech_audio)
+        assert session.get_info().state == SessionState.ACTIVE
+
+    @pytest.mark.asyncio
+    async def test_no_endpointing_while_created(self, session, silence_audio):
+        """Session should not send finals (endpointing) while waiting for first speech."""
+        # Process lots of silence while in CREATED state
+        # Should NOT trigger endpointing (is_final=True) since speech hasn't started
+        for _ in range(20):  # Way more than endpointing threshold
+            result = await session.process_chunk(silence_audio)
+            # While CREATED, should not get is_final=True
+            assert result.is_final is False
+
+        # Still in CREATED
+        assert session.get_info().state == SessionState.CREATED
+
+    @pytest.mark.asyncio
+    async def test_endpointing_works_after_speech_started(
+        self, session, speech_audio, silence_audio
+    ):
+        """Endpointing should work normally after speech has been detected."""
+        # Start with speech to become ACTIVE
+        await session.process_chunk(speech_audio)
+        assert session.get_info().state == SessionState.ACTIVE
+
+        # Now silence should trigger endpointing after threshold
+        final_received = False
+        for _ in range(20):
+            result = await session.process_chunk(silence_audio)
+            if result.is_final:
+                final_received = True
+                break
+
+        assert final_received, "Should receive is_final=True after silence threshold"
 
     @pytest.mark.asyncio
     async def test_session_transitions_to_closing_on_close(

@@ -26,7 +26,8 @@ class SessionManagerConfig:
     """Configuration for session manager."""
 
     max_sessions: int = 1000
-    idle_timeout_seconds: float = 300.0  # 5 minutes
+    initial_speech_timeout_seconds: float = 30.0  # 30 seconds for CREATED state
+    idle_timeout_seconds: float = 300.0  # 5 minutes for ACTIVE state
     cleanup_interval_seconds: float = 30.0
 
 
@@ -176,7 +177,10 @@ class SessionManager:
     async def _cleanup_idle_sessions(self):
         """Remove sessions that have been idle too long."""
         now = datetime.now(timezone.utc)
-        timeout = timedelta(seconds=self.manager_config.idle_timeout_seconds)
+        initial_timeout = timedelta(
+            seconds=self.manager_config.initial_speech_timeout_seconds
+        )
+        idle_timeout = timedelta(seconds=self.manager_config.idle_timeout_seconds)
 
         to_close: List[str] = []
 
@@ -185,7 +189,14 @@ class SessionManager:
                 info = session.get_info()
                 if info.state == SessionState.CLOSED:
                     to_close.append(session_id)
-                elif now - info.last_activity_at > timeout:
+                elif info.state == SessionState.CREATED:
+                    # Shorter timeout for sessions waiting for first speech
+                    if now - info.last_activity_at > initial_timeout:
+                        logger.info(
+                            f"Session {session_id} initial speech timeout (no speech detected)"
+                        )
+                        to_close.append(session_id)
+                elif now - info.last_activity_at > idle_timeout:
                     logger.info(f"Session {session_id} idle timeout")
                     to_close.append(session_id)
 
