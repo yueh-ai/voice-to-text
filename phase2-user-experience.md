@@ -634,6 +634,179 @@ Ops can see exactly when capacity was hit and how many were rejected.
 
 ---
 
+## 8. Accidental Connection (No Speech)
+
+### The Situation
+
+Tom opens the voice-to-text app by accident while scrolling through his phone. He doesn't realize it's open and sets his phone down. The app is now connected, receiving silence from the microphone.
+
+### The Problem
+
+How long should we wait for Tom to speak?
+
+- **Too short (5 seconds)**: Kicks off legitimate users who are preparing to speak
+- **Too long (5 minutes)**: A thousand accidental connections exhaust server resources
+- **Same as active sessions**: Wastes resources on connections that never provided value
+
+### How the Code Handles It
+
+The recent commit introduced **state-aware timeouts**:
+
+```python
+@dataclass
+class SessionManagerConfig:
+    initial_speech_timeout_seconds: float = 30.0  # For CREATED state
+    idle_timeout_seconds: float = 300.0           # For ACTIVE state (5 min)
+```
+
+The cleanup logic applies different timeouts based on state:
+
+```python
+async def _cleanup_idle_sessions(self):
+    for session_id, session in self._sessions.items():
+        info = session.get_info()
+
+        if info.state == SessionState.CREATED:
+            # Shorter timeout - no speech detected yet
+            if now - info.last_activity_at > initial_timeout:
+                logger.info(f"Session {session_id} initial speech timeout")
+                to_close.append(session_id)
+        elif now - info.last_activity_at > idle_timeout:
+            # Longer timeout - user has spoken, might just be pausing
+            logger.info(f"Session {session_id} idle timeout")
+            to_close.append(session_id)
+```
+
+### The Two-Timeout Rationale
+
+| State | Timeout | Rationale |
+|-------|---------|-----------|
+| CREATED | 30s | No value created yet. Quick cleanup frees resources. |
+| ACTIVE | 5 min | User invested effort. Allow pauses for thinking, phone calls, etc. |
+
+### What Tom Experiences
+
+1. Tom accidentally opens the app
+2. Session is created in `CREATED` state
+3. 30 seconds of silence pass (no speech detected)
+4. Server closes session: "initial speech timeout (no speech detected)"
+5. Resources freed for real users
+
+### Contrast: Sarah Pausing Mid-Dictation
+
+1. Sarah opens the app and speaks: "Meeting notes for..."
+2. Session transitions to `ACTIVE` state
+3. She gets a phone call, pauses for 3 minutes
+4. Session stays alive (under 5-minute ACTIVE timeout)
+5. She resumes: "...the quarterly review"
+6. Her context is preserved
+
+### Why Not Just One Timeout?
+
+A single timeout forces a tradeoff:
+- **30 seconds**: Sarah gets kicked off during her phone call
+- **5 minutes**: Tom's accidental connection wastes resources for 5 minutes
+
+Two timeouts let us optimize for both cases:
+- **Fail fast** when no value has been created
+- **Be patient** when the user has engaged
+
+---
+
+## 9. Race Condition During Session Shutdown
+
+### The Situation
+
+Priya is transcribing meeting notes. She closes her browser tab. At that exact millisecond, a final audio packet was already traveling through the network toward the server.
+
+### The Problem
+
+Without careful state management:
+
+```
+Time    WebSocket Thread           Cleanup Thread
+────────────────────────────────────────────────
+T1      audio packet in flight
+T2                                 close() called
+T3                                 vad_session.reset()
+T4      process_chunk(audio)
+T5      vad_session.is_speech() ← 💥 VAD in undefined state!
+```
+
+The audio arrived after cleanup started but before it finished. Calling methods on a half-cleaned-up object causes crashes or undefined behavior.
+
+### How the Code Handles It
+
+The `CLOSING` state acts as a **guard**:
+
+```python
+async def process_chunk(self, audio: bytes) -> TranscriptResult:
+    # Guard: reject work if we're shutting down
+    if self._state in (SessionState.CLOSING, SessionState.CLOSED):
+        raise SessionClosingError("Session is closing, cannot accept audio")
+
+    # Safe to proceed - state is CREATED or ACTIVE
+    # ...
+```
+
+The close sequence:
+
+```python
+async def close(self):
+    if self._state in (SessionState.CLOSING, SessionState.CLOSED):
+        return  # Idempotent - safe to call twice
+
+    self._state = SessionState.CLOSING  # Signal: "stop accepting work"
+
+    # Now safe to clean up
+    self.vad_session.reset()
+    self._reset()
+
+    self._state = SessionState.CLOSED   # Terminal state
+```
+
+### What Actually Happens
+
+```
+Time    WebSocket Thread           Cleanup Thread
+────────────────────────────────────────────────
+T1      audio packet in flight
+T2                                 close() called
+T3                                 state = CLOSING
+T4      process_chunk(audio)
+T5      sees state == CLOSING
+T6      raises SessionClosingError ← Clean rejection!
+T7                                 vad_session.reset()
+T8                                 state = CLOSED
+```
+
+The late audio is rejected cleanly. No crash, no undefined behavior.
+
+### Restaurant Analogy
+
+| State | Restaurant Equivalent |
+|-------|----------------------|
+| CREATED | Open but no customers yet |
+| ACTIVE | Serving customers |
+| CLOSING | Kitchen closed, finishing existing orders, rejecting new ones |
+| CLOSED | Lights off, doors locked |
+
+CLOSING means: **"We're wrapping up. Don't start any new work."**
+
+### Why Not Jump Straight to CLOSED?
+
+If we set `state = CLOSED` before cleanup:
+
+```python
+async def close(self):
+    self._state = SessionState.CLOSED  # Immediately closed
+    self.vad_session.reset()           # Cleanup happens after
+```
+
+There's still a window where `process_chunk` could check state, see `CLOSED`, but race with the cleanup. The explicit `CLOSING` state makes the "rejecting new work" phase distinct from the "cleanup complete" phase.
+
+---
+
 ## Summary
 
 These scenarios drive the Phase 2 design:
@@ -647,5 +820,7 @@ These scenarios drive the Phase 2 design:
 | Capacity limit | Atomic check + clear error codes |
 | Long sessions | Bounded buffers, stateless processing |
 | Connection bursts | Fast creation, async lock, lightweight objects |
+| Accidental connection | State-aware timeouts (30s CREATED vs 5min ACTIVE) |
+| Shutdown race condition | `CLOSING` state as guard before cleanup |
 
 Each mechanism exists because of a real user need, not just technical elegance.
