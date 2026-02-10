@@ -9,35 +9,63 @@ Run with:
 
 Or headless:
     locust --host=http://localhost:8000 --headless -u 100 -r 10 -t 60s
+
+Environment variables:
+    LOAD_TEST_AUDIO: auto (default) | real | synthetic
+        auto     - Use real clips if available, fall back to synthetic
+        real     - Require real clips (error if missing)
+        synthetic - Always use synthetic random PCM
+    LOAD_TEST_STREAM_PACE: realtime | fast | none (default)
+        realtime - 20ms delay per 20ms chunk (1x real-time)
+        fast     - 5ms delay per chunk (~4x real-time)
+        none     - No delay (max throughput)
 """
 
 import base64
 import json
+import os
+import sys
 import time
 import random
-from contextlib import contextmanager
 
 from locust import HttpUser, task, between, events
 from locust.runners import MasterRunner
 import websocket
 
-
-# Generate fake PCM audio data (16-bit, 16kHz mono)
-# 20ms of audio = 640 bytes (20ms * 16000Hz * 2 bytes)
-def generate_audio_chunk(duration_ms: int = 20) -> bytes:
-    """Generate fake PCM audio data."""
-    samples = int(16000 * duration_ms / 1000)
-    # Generate random audio-like data (not silence, to trigger VAD)
-    return bytes(random.randint(0, 255) for _ in range(samples * 2))
+from audio.audio_provider import get_provider, AudioProvider
 
 
-# Pre-generate some audio chunks to avoid overhead during tests
-AUDIO_CHUNKS = [generate_audio_chunk(20) for _ in range(100)]
+# --- Audio mode configuration ---
 
+AUDIO_MODE = os.environ.get("LOAD_TEST_AUDIO", "auto").lower()
+STREAM_PACE = os.environ.get("LOAD_TEST_STREAM_PACE", "none").lower()
 
-def get_random_audio_chunk() -> bytes:
-    """Get a pre-generated audio chunk."""
-    return random.choice(AUDIO_CHUNKS)
+PACE_DELAYS = {
+    "realtime": 0.020,  # 20ms - matches chunk duration
+    "fast": 0.005,      # 5ms - ~4x real-time
+    "none": 0.0,        # No delay
+}
+
+if STREAM_PACE not in PACE_DELAYS:
+    print(f"WARNING: Unknown LOAD_TEST_STREAM_PACE={STREAM_PACE!r}, using 'none'")
+    STREAM_PACE = "none"
+
+PACE_DELAY = PACE_DELAYS[STREAM_PACE]
+
+# Initialize audio provider
+provider = get_provider()
+
+if AUDIO_MODE == "real" and not provider.is_real:
+    print("ERROR: LOAD_TEST_AUDIO=real but no audio clips found.")
+    print("Run: python loadtests/audio/download_audio.py")
+    sys.exit(1)
+elif AUDIO_MODE == "synthetic":
+    # Force synthetic even if clips exist
+    provider = AudioProvider()  # Fresh instance with no clips loaded
+    provider.is_real = False
+elif AUDIO_MODE not in ("auto", "real", "synthetic"):
+    print(f"WARNING: Unknown LOAD_TEST_AUDIO={AUDIO_MODE!r}, using 'auto'")
+    AUDIO_MODE = "auto"
 
 
 class WebSocketClient:
@@ -137,15 +165,14 @@ class TranscriptionUser(HttpUser):
             )
             return
 
-        # Send audio chunks (simulate 1-5 seconds of audio)
-        num_chunks = random.randint(50, 250)  # 1-5 seconds at 20ms chunks
+        # Get audio chunks from provider
+        chunks = provider.get_streaming_chunks()
         chunk_latencies = []
 
         try:
-            for i in range(num_chunks):
-                audio = get_random_audio_chunk()
+            for chunk in chunks:
                 try:
-                    response, latency = client.send_audio(audio)
+                    response, latency = client.send_audio(chunk)
                     chunk_latencies.append(latency)
 
                     if response.get("type") == "error":
@@ -177,6 +204,9 @@ class TranscriptionUser(HttpUser):
                     )
                     break
 
+                if PACE_DELAY > 0:
+                    time.sleep(PACE_DELAY)
+
         finally:
             client.close()
 
@@ -187,7 +217,7 @@ class TranscriptionUser(HttpUser):
                 request_type="WebSocket",
                 name="session_complete",
                 response_time=avg_latency,
-                response_length=num_chunks,
+                response_length=len(chunks),
                 exception=None,
                 context={},
             )
@@ -195,9 +225,7 @@ class TranscriptionUser(HttpUser):
     @task(3)
     def rest_transcribe(self):
         """Simulate a REST transcription request."""
-        # Generate 1-3 seconds of audio
-        duration_ms = random.randint(1000, 3000)
-        audio = generate_audio_chunk(duration_ms)
+        audio = provider.get_rest_audio()
 
         with self.client.post(
             "/v1/transcribe",
@@ -254,14 +282,13 @@ class WebSocketOnlyUser(HttpUser):
             )
             return
 
-        # Longer sessions for stress testing
-        num_chunks = random.randint(100, 500)
+        # Get audio chunks from provider
+        chunks = provider.get_streaming_chunks()
 
         try:
-            for _ in range(num_chunks):
-                audio = get_random_audio_chunk()
+            for chunk in chunks:
                 try:
-                    response, latency = client.send_audio(audio)
+                    response, latency = client.send_audio(chunk)
                     events.request.fire(
                         request_type="WebSocket",
                         name="audio_chunk",
@@ -280,6 +307,9 @@ class WebSocketOnlyUser(HttpUser):
                         context={},
                     )
                     break
+
+                if PACE_DELAY > 0:
+                    time.sleep(PACE_DELAY)
         finally:
             client.close()
 
@@ -297,8 +327,7 @@ class RESTOnlyUser(HttpUser):
     @task
     def rest_transcribe(self):
         """REST transcription request."""
-        duration_ms = random.randint(500, 2000)
-        audio = generate_audio_chunk(duration_ms)
+        audio = provider.get_rest_audio()
 
         with self.client.post(
             "/v1/transcribe",
@@ -319,6 +348,12 @@ class RESTOnlyUser(HttpUser):
 def on_test_start(environment, **kwargs):
     print("Load test starting...")
     print(f"Target host: {environment.host}")
+    print(f"Audio mode: {provider.mode}")
+    if provider.is_real:
+        print(f"Real audio clips: {provider.clip_count}")
+    else:
+        print("Using synthetic random PCM audio")
+    print(f"Stream pacing: {STREAM_PACE} (delay={PACE_DELAY*1000:.0f}ms/chunk)")
 
 
 @events.test_stop.add_listener

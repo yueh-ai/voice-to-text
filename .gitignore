@@ -8,3 +8,5 @@ dist/
 build/
 .env
 loadtests/results/
+loadtests/audio/clips/
+loadtests/audio/manifest.json

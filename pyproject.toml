@@ -14,6 +14,14 @@ dependencies = [
     "setuptools",  # Required by webrtcvad for pkg_resources
 ]
 
+[project.optional-dependencies]
+nemo = [
+    "nemo-toolkit[asr]>=2.6.0",
+    "torch>=2.5.0",
+    "torchaudio>=2.5.0",
+    "numpy>=2.0.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
@@ -22,6 +30,8 @@ dev = [
     "websockets>=14.0",
     "locust>=2.43.1",
     "websocket-client>=1.9.0",
+    "numpy>=2.0.0",
+    "soundfile>=0.12.0",
 ]
 
 [build-system]
