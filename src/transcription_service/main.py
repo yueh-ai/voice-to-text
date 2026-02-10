@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     await session_manager.stop()
     clear_session_manager()
 
+    # Cleanup ASR model resources (e.g. GPU memory for NeMo)
+    if hasattr(models.asr, "cleanup"):
+        models.asr.cleanup()
+
 
 app = FastAPI(
     title="Transcription Service",

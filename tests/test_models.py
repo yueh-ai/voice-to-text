@@ -72,3 +72,34 @@ class TestModels:
 
         assert isinstance(models.asr, MockASRModel)
         assert models.asr.latency_ms == 100
+
+    def test_default_engine_is_mock(self):
+        """Default asr_engine setting should be 'mock'."""
+        from transcription_service.config import Settings
+
+        config = Settings()
+        assert config.asr_engine == "mock"
+
+    def test_init_models_with_mock_config_creates_mock_asr(self):
+        """init_models with asr_engine='mock' should create MockASRModel."""
+        from transcription_service.core.models import init_models, _reset_models
+        from transcription_service.core.mock_asr import MockASRModel
+        from transcription_service.config import Settings
+
+        _reset_models()
+
+        config = Settings(asr_engine="mock")
+        models = init_models(config)
+
+        assert isinstance(models.asr, MockASRModel)
+
+    def test_init_models_with_nemo_config_raises_without_nemo(self):
+        """init_models with asr_engine='nemo' should raise if NeMo is not installed."""
+        from transcription_service.core.models import init_models, _reset_models
+        from transcription_service.config import Settings
+
+        _reset_models()
+
+        config = Settings(asr_engine="nemo")
+        with pytest.raises(RuntimeError, match="nemo-toolkit"):
+            init_models(config)

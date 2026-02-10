@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Processing
     latency_ms: int = 50  # simulated processing delay
 
+    # ASR engine selection
+    asr_engine: str = "mock"  # "mock" or "nemo"
+    nemo_model_name: str = "nvidia/parakeet-tdt-0.6b-v3"
+    nemo_device: str = "auto"  # "auto", "cuda", "cpu"
+    nemo_warmup: bool = True
+    nemo_rtf_warning_threshold: float = 0.9
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8001
