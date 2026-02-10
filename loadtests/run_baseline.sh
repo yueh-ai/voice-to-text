@@ -10,7 +10,7 @@
 
 set -e
 
-HOST="${HOST:-http://localhost:8001}"
+HOST="${HOST:-http://localhost:8000}"
 USERS="${1:-100}"
 SPAWN_RATE="${2:-10}"
 DURATION="${3:-60}"
